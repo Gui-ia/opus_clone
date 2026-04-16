@@ -13,7 +13,10 @@ def main():
     setup_logging()
     logger.info("scheduler_starting")
 
-    scheduler = AsyncIOScheduler()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    scheduler = AsyncIOScheduler(event_loop=loop)
 
     # Poll YouTube channels every 15 minutes (fallback for PubSubHubbub)
     scheduler.add_job(
@@ -39,7 +42,7 @@ def main():
     logger.info("scheduler_started", jobs=len(scheduler.get_jobs()))
 
     try:
-        asyncio.get_event_loop().run_forever()
+        loop.run_forever()
     except (KeyboardInterrupt, SystemExit):
         scheduler.shutdown()
         logger.info("scheduler_stopped")
