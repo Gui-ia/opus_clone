@@ -1,0 +1,122 @@
+services:
+  opus-postgres:
+    image: pgvector/pgvector:pg16
+    container_name: opus-postgres
+    environment:
+      POSTGRES_USER: opus
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: opus_clone
+    volumes:
+      - /var/lib/opus-postgres:/var/lib/postgresql/data
+    ports:
+      - "5632:5432"
+    networks:
+      - opus-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opus -d opus_clone"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  opus-redis:
+    image: redis:7-alpine
+    container_name: opus-redis
+    command: redis-server --requirepass ${REDIS_PASSWORD} --appendonly yes
+    volumes:
+      - /var/lib/opus-redis:/data
+    ports:
+      - "6479:6379"
+    networks:
+      - opus-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  opus-minio:
+    image: minio/minio:latest
+    container_name: opus-minio
+    command: server /data --console-address ":9601"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    volumes:
+      - /var/lib/opus-minio:/data
+    ports:
+      - "9600:9000"
+      - "9601:9601"
+    networks:
+      - opus-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  opus-api:
+    build: .
+    container_name: opus-api
+    command: uvicorn opus_clone.api.main:app --host 0.0.0.0 --port 8080 --workers 2
+    env_file: .env
+    ports:
+      - "8080:8080"
+    networks:
+      - opus-net
+    depends_on:
+      opus-postgres:
+        condition: service_healthy
+      opus-redis:
+        condition: service_healthy
+      opus-minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  opus-worker:
+    build: .
+    container_name: opus-worker
+    command: dramatiq opus_clone.workers --processes 2 --threads 2
+    env_file: .env
+    networks:
+      - opus-net
+    depends_on:
+      opus-postgres:
+        condition: service_healthy
+      opus-redis:
+        condition: service_healthy
+      opus-minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  opus-scheduler:
+    build: .
+    container_name: opus-scheduler
+    command: python -m opus_clone.scheduler
+    env_file: .env
+    networks:
+      - opus-net
+    depends_on:
+      opus-postgres:
+        condition: service_healthy
+      opus-redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  opus-ngrok:
+    image: ngrok/ngrok:latest
+    container_name: opus-ngrok
+    command: http opus-api:8080 --domain=${NGROK_DOMAIN}
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
+    networks:
+      - opus-net
+    depends_on:
+      - opus-api
+    restart: unless-stopped
+
+networks:
+  opus-net:
+    driver: bridge

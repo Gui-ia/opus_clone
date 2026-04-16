@@ -1,0 +1,33 @@
+{
+  "duration": 180.5,
+  "scenes": [
+    {"start": 0.0, "end": 45.2, "dominant_faces": ["face_0"]},
+    {"start": 45.2, "end": 92.8, "dominant_faces": ["face_0"]},
+    {"start": 92.8, "end": 140.5, "dominant_faces": ["face_0"]},
+    {"start": 140.5, "end": 180.5, "dominant_faces": ["face_0"]}
+  ],
+  "faces": [
+    {
+      "face_id": "face_0",
+      "appearances": [
+        {"start": 0.0, "end": 180.0}
+      ]
+    }
+  ],
+  "active_speaker_timeline": [
+    {"start_ms": 120, "end_ms": 4880, "face_id": "face_0", "confidence": 0.91, "bbox_normalized": [0.35, 0.20, 0.25, 0.40]},
+    {"start_ms": 5200, "end_ms": 12400, "face_id": "face_0", "confidence": 0.89, "bbox_normalized": [0.38, 0.22, 0.24, 0.38]},
+    {"start_ms": 13000, "end_ms": 22500, "face_id": "face_0", "confidence": 0.92, "bbox_normalized": [0.36, 0.21, 0.25, 0.39]},
+    {"start_ms": 23000, "end_ms": 45200, "face_id": "face_0", "confidence": 0.88, "bbox_normalized": [0.40, 0.20, 0.22, 0.40]},
+    {"start_ms": 45500, "end_ms": 92800, "face_id": "face_0", "confidence": 0.90, "bbox_normalized": [0.37, 0.22, 0.24, 0.38]},
+    {"start_ms": 93000, "end_ms": 140500, "face_id": "face_0", "confidence": 0.87, "bbox_normalized": [0.35, 0.21, 0.25, 0.40]},
+    {"start_ms": 141000, "end_ms": 180000, "face_id": "face_0", "confidence": 0.91, "bbox_normalized": [0.36, 0.20, 0.24, 0.39]}
+  ],
+  "keyframes": [
+    {"time_s": 0.5, "scene_idx": 0, "has_face": true, "faces_present": ["face_0"]},
+    {"time_s": 23.5, "scene_idx": 0, "has_face": true, "faces_present": ["face_0"]},
+    {"time_s": 46.0, "scene_idx": 1, "has_face": true, "faces_present": ["face_0"]},
+    {"time_s": 93.5, "scene_idx": 2, "has_face": true, "faces_present": ["face_0"]},
+    {"time_s": 141.0, "scene_idx": 3, "has_face": true, "faces_present": ["face_0"]}
+  ]
+}
