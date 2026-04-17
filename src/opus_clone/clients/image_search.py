@@ -5,57 +5,50 @@ from opus_clone.logging import get_logger
 
 logger = get_logger("image_search")
 
-GOOGLE_CSE_URL = "https://www.googleapis.com/customsearch/v1"
+PEXELS_SEARCH_URL = "https://api.pexels.com/v1/search"
 
 
 async def search_image(query: str) -> bytes | None:
-    """Search for an image using Google Custom Search and return its bytes.
+    """Search for an image using Pexels API and return its bytes.
 
     Returns None if search fails or no results found.
     """
     settings = get_settings()
-    api_key = settings.google_cse_api_key
-    cse_id = settings.google_cse_id
+    api_key = settings.pexels_api_key
 
-    if not api_key or not cse_id:
+    if not api_key:
         logger.warning("image_search_not_configured", query=query)
         return None
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            # Search for images
+            # Search for photos on Pexels
             response = await client.get(
-                GOOGLE_CSE_URL,
+                PEXELS_SEARCH_URL,
+                headers={"Authorization": api_key},
                 params={
-                    "key": api_key,
-                    "cx": cse_id,
-                    "q": query,
-                    "searchType": "image",
-                    "num": 1,
-                    "imgSize": "large",
-                    "safe": "active",
+                    "query": query,
+                    "per_page": 1,
+                    "orientation": "portrait",
+                    "size": "medium",
                 },
             )
             response.raise_for_status()
             data = response.json()
 
-            items = data.get("items", [])
-            if not items:
+            photos = data.get("photos", [])
+            if not photos:
                 logger.info("image_search_no_results", query=query)
                 return None
 
-            image_url = items[0].get("link")
+            # Use the "large" size (940x650) — good quality for overlay
+            image_url = photos[0].get("src", {}).get("large")
             if not image_url:
                 return None
 
             # Download the image
             img_response = await client.get(image_url, follow_redirects=True, timeout=15)
             img_response.raise_for_status()
-
-            content_type = img_response.headers.get("content-type", "")
-            if not content_type.startswith("image/"):
-                logger.warning("image_search_not_image", url=image_url, content_type=content_type)
-                return None
 
             logger.info("image_search_success", query=query, url=image_url, size=len(img_response.content))
             return img_response.content
