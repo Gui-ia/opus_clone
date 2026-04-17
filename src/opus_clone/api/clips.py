@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from opus_clone.config import get_settings
 from opus_clone.db import get_db
 from opus_clone.logging import get_logger
 from opus_clone.models.db import Clip, ClipStatus
@@ -64,6 +65,24 @@ async def approve_clip(clip_id: str, data: ClipApproval | None = None, db: Async
 
     logger.info("clip_approved", clip_id=clip_id)
     return ClipResponse.model_validate(clip)
+
+
+@router.get("/{clip_id}/stream")
+async def stream_clip(clip_id: str, db: AsyncSession = Depends(get_db)):
+    """Get a presigned URL to stream/download the rendered clip."""
+    from fastapi.responses import RedirectResponse
+    from opus_clone.services.minio import generate_presigned_get
+
+    result = await db.execute(select(Clip).where(Clip.id == clip_id))
+    clip = result.scalar_one_or_none()
+    if not clip:
+        raise HTTPException(status_code=404, detail="Clip not found")
+    if not clip.minio_key:
+        raise HTTPException(status_code=404, detail="Clip not rendered yet")
+
+    config = get_settings()
+    url = generate_presigned_get(config.minio_bucket_clips, clip.minio_key, expires=3600)
+    return RedirectResponse(url=url)
 
 
 @router.patch("/{clip_id}/reject", response_model=ClipResponse)

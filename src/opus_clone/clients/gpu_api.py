@@ -33,11 +33,13 @@ class GpuApiClient:
         self.base_url = self.settings.gpu_api_url
         self.mock = self.settings.gpu_api_mock
 
-    def _client(self) -> httpx.AsyncClient:
+    def _client(self, **kwargs) -> httpx.AsyncClient:
+        timeout = kwargs.pop("timeout", self.settings.gpu_api_timeout_s)
         return httpx.AsyncClient(
             base_url=self.base_url,
             headers={"Authorization": f"Bearer {self.settings.gpu_api_key}"},
-            timeout=httpx.Timeout(self.settings.gpu_api_timeout_s),
+            timeout=httpx.Timeout(timeout),
+            **kwargs,
         )
 
     async def _handle_response(self, response: httpx.Response) -> dict:
@@ -65,9 +67,10 @@ class GpuApiClient:
     )
     async def upload_file(self, file_bytes: bytes, filename: str) -> FileUploadResponse:
         if self.mock:
-            return FileUploadResponse(file_id="mock-file-id-001", filename=filename, size_bytes=len(file_bytes))
+            return FileUploadResponse(file_id="mock-file-id-001", filename=filename, size=len(file_bytes))
 
-        async with self._client() as client:
+        # Use longer timeout for large uploads (10 min)
+        async with self._client(timeout=600) as client:
             response = await client.post(
                 "/v1/files/upload",
                 files={"file": (filename, file_bytes)},
@@ -90,17 +93,17 @@ class GpuApiClient:
         async with self._client() as client:
             response = await client.post(
                 "/v1/audio/transcriptions",
-                json=request.model_dump(),
+                json=request.model_dump(exclude_none=True),
             )
             data = await self._handle_response(response)
-            return data.get("job_id", data.get("id", ""))
+            return data.get("job_id", "")
 
     async def get_transcription_result(self, result_url: str) -> TranscriptionResult:
         if self.mock:
             fixture = self._load_fixture("sample_transcript.json")
-            return TranscriptionResult(**fixture) if fixture else TranscriptionResult(language="pt", duration=180.0, segments=[])
+            return TranscriptionResult(**fixture) if fixture else TranscriptionResult()
 
-        async with self._client() as client:
+        async with self._client(timeout=120) as client:
             response = await client.get(result_url)
             data = await self._handle_response(response)
             return TranscriptionResult(**data)
@@ -120,17 +123,17 @@ class GpuApiClient:
         async with self._client() as client:
             response = await client.post(
                 "/v1/video/analyze",
-                json=request.model_dump(),
+                json=request.model_dump(exclude_none=True),
             )
             data = await self._handle_response(response)
-            return data.get("job_id", data.get("id", ""))
+            return data.get("job_id", "")
 
     async def get_analysis_result(self, result_url: str) -> AnalysisResult:
         if self.mock:
             fixture = self._load_fixture("sample_analyze.json")
-            return AnalysisResult(**fixture) if fixture else AnalysisResult(duration=180.0)
+            return AnalysisResult(**fixture) if fixture else AnalysisResult()
 
-        async with self._client() as client:
+        async with self._client(timeout=120) as client:
             response = await client.get(result_url)
             data = await self._handle_response(response)
             return AnalysisResult(**data)
@@ -153,10 +156,10 @@ class GpuApiClient:
                 }],
             )
 
-        async with self._client() as client:
+        async with self._client(timeout=120) as client:
             response = await client.post(
                 "/v1/chat/completions",
-                json=request.model_dump(),
+                json=request.model_dump(exclude_none=True),
             )
             data = await self._handle_response(response)
             return ChatCompletionResponse(**data)
@@ -176,10 +179,10 @@ class GpuApiClient:
         async with self._client() as client:
             response = await client.post(
                 "/v1/video/render",
-                json=request.model_dump(),
+                json=request.model_dump(exclude_none=True),
             )
             data = await self._handle_response(response)
-            return data.get("job_id", data.get("id", ""))
+            return data.get("job_id", "")
 
     # ========== Image Generation ==========
 
@@ -193,19 +196,26 @@ class GpuApiClient:
         if self.mock:
             return "http://mock/outputs/thumbnail_001.png"
 
-        async with self._client() as client:
+        async with self._client(timeout=120) as client:
             response = await client.post(
                 "/v1/images/generations",
                 json={"prompt": prompt, **kwargs},
             )
             data = await self._handle_response(response)
+            # Sync response has data[0].url
+            if "data" in data and data["data"]:
+                return data["data"][0].get("url", "")
             return data.get("url", data.get("result_url", ""))
 
     # ========== Job Status (polling) ==========
 
     async def get_job_status(self, job_type: str, job_id: str) -> JobStatusResponse:
+        """Poll job status. job_type: 'audio/transcriptions', 'video/analyze', 'video/render'."""
         if self.mock:
-            return JobStatusResponse(job_id=job_id, status="completed", result_url=f"http://mock/outputs/{job_id}.json")
+            return JobStatusResponse(
+                job_id=job_id, status="completed",
+                result_url=f"/outputs/{job_id}.json",
+            )
 
         async with self._client() as client:
             response = await client.get(f"/v1/{job_type}/status/{job_id}")
@@ -214,11 +224,15 @@ class GpuApiClient:
 
     # ========== Download Output ==========
 
-    async def download_output(self, filename: str) -> bytes:
+    async def download_output(self, url_path: str) -> bytes:
+        """Download file from /outputs/ path."""
         if self.mock:
             return b"mock-file-content"
 
-        async with self._client() as client:
-            response = await client.get(f"/outputs/{filename}")
+        async with self._client(timeout=300) as client:
+            # url_path can be "/outputs/xxx.mp4" or just "xxx.mp4"
+            if not url_path.startswith("/"):
+                url_path = f"/outputs/{url_path}"
+            response = await client.get(url_path)
             response.raise_for_status()
             return response.content

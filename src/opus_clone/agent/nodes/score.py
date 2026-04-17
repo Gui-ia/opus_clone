@@ -54,6 +54,15 @@ async def score_node(state: PipelineState) -> PipelineState:
         if v.heatmap:
             heatmap_info = f"\n\nHeatmap (most-replayed parts):\n{json.dumps(v.heatmap[:20])}"
 
+    # Build scenes summary from analysis
+    scenes_summary = ""
+    for scene in analysis.get("scenes", []):
+        scenes_summary += f"  Scene {scene.get('scene_idx', 0)}: {scene.get('start_s', 0):.1f}s - {scene.get('end_s', 0):.1f}s ({scene.get('duration_s', 0):.1f}s)\n"
+
+    # Count recurring faces (likely the main speakers)
+    identities = analysis.get("identities", [])
+    recurring_faces = [i for i in identities if i.get("detections", 0) >= 5]
+
     user_message = f"""Analyze this video transcript and identify the top {max_clips} most viral clip candidates.
 
 Duration range per clip: {clip_durations[0]}s to {clip_durations[-1]}s
@@ -64,8 +73,10 @@ TRANSCRIPT:
 {heatmap_info}
 
 VIDEO ANALYSIS SUMMARY:
-- Scenes: {len(analysis.get('scenes', []))}
-- Active speakers: {len(set(e.get('face_id') for e in analysis.get('active_speaker_timeline', [])))}
+- Scenes detected: {len(analysis.get('scenes', []))}
+- Recurring faces (main people): {len(recurring_faces)}
+- Scene breakdown:
+{scenes_summary[:3000]}
 
 Return a JSON array of clip candidates. Each candidate:
 {{

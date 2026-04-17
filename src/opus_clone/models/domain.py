@@ -138,6 +138,15 @@ class ClipResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ProcessVideosRequest(BaseModel):
+    video_ids: list[str] = Field(min_length=1, max_length=50)
+
+
+class ProcessVideosResponse(BaseModel):
+    queued: list[str]
+    skipped: list[str]
+
+
 class ClipApproval(BaseModel):
     title: str | None = None
     description: str | None = None

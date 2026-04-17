@@ -60,20 +60,27 @@ async def transcribe_node(state: PipelineState) -> PipelineState:
 
     # Poll for completion
     transcript_result = None
+    status_data = None
     for attempt in range(60):  # Max 10 min (60 * 10s)
         await asyncio.sleep(10)
-        status = await gpu_client.get_job_status("audio/transcriptions", gpu_job_id)
+        status_data = await gpu_client.get_job_status("audio/transcriptions", gpu_job_id)
 
-        if status.status == "completed":
-            transcript_result = await gpu_client.get_transcription_result(
-                status.result_url or f"{settings.gpu_api_url}/outputs/{gpu_job_id}.json"
-            )
+        if status_data.status == "completed":
+            result_url = status_data.result_url or f"/outputs/{gpu_job_id}.json"
+            transcript_result = await gpu_client.get_transcription_result(result_url)
             break
-        elif status.status == "failed":
-            raise RuntimeError(f"Transcription failed: {status.error}")
+        elif status_data.status == "failed":
+            raise RuntimeError(f"Transcription failed: {status_data.error}")
 
     if transcript_result is None:
         raise RuntimeError("Transcription timed out")
+
+    # Count unique speakers from segments
+    speakers = set()
+    for seg in transcript_result.segments:
+        if seg.speaker:
+            speakers.add(seg.speaker)
+    speakers_count = status_data.speakers_count or len(speakers)
 
     # Store transcript in DB
     transcript_dict = transcript_result.model_dump()
@@ -82,7 +89,8 @@ async def transcribe_node(state: PipelineState) -> PipelineState:
         video = result.scalar_one()
         video.transcript_json = transcript_dict
         video.language_detected = transcript_result.language
-        video.speakers_count = len(transcript_result.speakers)
+        video.speakers_count = speakers_count
+        video.duration_s = status_data.duration_s or transcript_result.duration
 
     # Update GPU job
     async with get_db_session() as session:
@@ -95,7 +103,8 @@ async def transcribe_node(state: PipelineState) -> PipelineState:
         "transcribe_complete",
         source_video_id=source_video_id,
         segments=len(transcript_result.segments),
-        speakers=len(transcript_result.speakers),
+        speakers=speakers_count,
+        duration_s=status_data.duration_s,
     )
 
     return {

@@ -15,6 +15,126 @@ from opus_clone.services.minio import upload_file
 logger = get_logger("node.render")
 
 
+def _edl_to_render_api(edl: dict, gpu_file_id: str) -> dict:
+    """Convert internal EDL format to the render API's expected EDL format.
+
+    Internal EDL has: clip_start_ms, clip_end_ms, output_spec, captions (word-level), reframe, zooms
+    Render API expects: clips (file_id + in_point/out_point), output, captions (timed text), loudnorm
+    """
+    start_ms = edl.get("clip_start_ms", 0)
+    end_ms = edl.get("clip_end_ms", 0)
+    output_spec = edl.get("output_spec", {})
+
+    # Build clips array — single clip from the source video
+    clips = [{
+        "file_id": gpu_file_id,
+        "in_point": start_ms / 1000.0,
+        "out_point": end_ms / 1000.0,
+        "volume": 1.0,
+    }]
+
+    # Build output spec
+    output = {
+        "width": output_spec.get("width", 1080),
+        "height": output_spec.get("height", 1920),
+        "fps": output_spec.get("fps", 30),
+        "video_codec": output_spec.get("codec", "h264_nvenc"),
+    }
+
+    # Convert word-level captions to timed text segments
+    captions_config = edl.get("captions", {})
+    caption_words = captions_config.get("words", [])
+    captions = _words_to_caption_segments(caption_words, start_ms)
+
+    # Reframe config (if tracks exist, pass as-is for the render worker)
+    reframe = edl.get("reframe", {})
+
+    # Zooms
+    zooms = edl.get("zooms", [])
+
+    # Loudnorm
+    loudnorm_spec = output_spec.get("loudnorm", {})
+    loudnorm = {
+        "enabled": True,
+        "target_i": loudnorm_spec.get("I", -14.0),
+        "target_lra": loudnorm_spec.get("LRA", 9.0),
+        "target_tp": loudnorm_spec.get("TP", -1.0),
+    }
+
+    render_edl = {
+        "output": output,
+        "clips": clips,
+        "loudnorm": loudnorm,
+    }
+
+    if captions:
+        render_edl["captions"] = captions
+
+    # Pass only reframe tracks (keyframes), not the full config
+    reframe_tracks = reframe.get("tracks", [])
+    if reframe_tracks:
+        render_edl["reframe"] = [
+            {
+                "start": t.get("start_ms", 0) / 1000.0,
+                "end": t.get("end_ms", 0) / 1000.0,
+                "cx": t.get("cx_ratio", 0.5),
+                "cy": t.get("cy_ratio", 0.4),
+                "scale": t.get("scale", 1.0),
+            }
+            for t in reframe_tracks
+        ]
+
+    return render_edl
+
+
+def _words_to_caption_segments(words: list[dict], clip_start_ms: int) -> list[dict]:
+    """Group word-level captions into timed text segments (max 3 words per line)."""
+    if not words:
+        return []
+
+    max_words = 3
+    segments = []
+    current_words = []
+    current_start = None
+
+    for w in words:
+        word_text = w.get("word", "").strip()
+        if not word_text:
+            continue
+
+        w_start = w.get("start_ms", 0)
+        w_end = w.get("end_ms", 0)
+
+        if current_start is None:
+            current_start = w_start
+
+        current_words.append(word_text)
+
+        if len(current_words) >= max_words:
+            seg_start = max(0, (current_start - clip_start_ms) / 1000.0)
+            seg_end = max(seg_start + 0.1, (w_end - clip_start_ms) / 1000.0)
+            segments.append({
+                "start": seg_start,
+                "end": seg_end,
+                "text": " ".join(current_words),
+            })
+            current_words = []
+            current_start = None
+
+    # Flush remaining words
+    if current_words:
+        last_end = words[-1].get("end_ms", 0) if words else 0
+        seg_start = max(0, (current_start - clip_start_ms) / 1000.0)
+        seg_end = max(seg_start + 0.1, (last_end - clip_start_ms) / 1000.0)
+        segments.append({
+            "start": seg_start,
+            "end": seg_end,
+            "text": " ".join(current_words),
+        })
+
+    return segments
+
+
 async def render_node(state: PipelineState) -> PipelineState:
     """Dispatch render jobs for all planned clips and wait for completion."""
     source_video_id = state["source_video_id"]
@@ -36,6 +156,9 @@ async def render_node(state: PipelineState) -> PipelineState:
             clip.status = ClipStatus.rendering
             edl = clip.edl
 
+        # Convert internal EDL to render API format
+        render_edl = _edl_to_render_api(edl, gpu_file_id)
+
         # Create GPU job record
         async with get_db_session() as session:
             job = GpuJob(
@@ -51,8 +174,7 @@ async def render_node(state: PipelineState) -> PipelineState:
 
         # Dispatch render
         request = RenderRequest(
-            source_file_id=gpu_file_id,
-            edl=edl,
+            edl=render_edl,
             webhook_url=f"{settings.app_base_url}/v1/webhooks/render",
         )
         gpu_job_id = await gpu_client.render_video(request)
@@ -85,9 +207,9 @@ async def render_node(state: PipelineState) -> PipelineState:
             status = await gpu_client.get_job_status("video/render", gpu_job_id)
 
             if status.status == "completed":
-                # Download rendered clip and upload to MinIO
-                result_url = status.result_url or f"{settings.gpu_api_url}/outputs/{gpu_job_id}.mp4"
-                clip_bytes = await gpu_client.download_output(f"{gpu_job_id}.mp4")
+                # Download rendered clip
+                result_url = status.result_url or f"/outputs/{gpu_job_id}.mp4"
+                clip_bytes = await gpu_client.download_output(result_url)
 
                 minio_key = f"clips/{source_video_id}/{clip_id}.mp4"
                 upload_file(settings.minio_bucket_clips, minio_key, clip_bytes, "video/mp4")
@@ -116,7 +238,6 @@ async def render_node(state: PipelineState) -> PipelineState:
                     result = await session.execute(select(Clip).where(Clip.id == clip_id))
                     clip = result.scalar_one()
                     clip.status = ClipStatus.failed
-                    clip.error_message = status.error
 
                 completed.add(clip_id)
                 logger.error("render_failed", clip_id=clip_id, error=status.error)

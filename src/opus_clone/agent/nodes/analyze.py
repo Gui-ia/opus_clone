@@ -41,9 +41,14 @@ async def analyze_node(state: PipelineState) -> PipelineState:
         await session.flush()
         job_db_id = job.id
 
-    # Dispatch analysis
+    # Dispatch analysis — always h264 compatible, detect_active_speaker off by default
+    # (Light-ASD needs higher resolution and doesn't work on all video types)
     request = VideoAnalyzeRequest(
         file_id=gpu_file_id,
+        detect_scenes=True,
+        detect_faces=True,
+        detect_active_speaker=False,
+        frames_per_scene=5,
         webhook_url=f"{settings.app_base_url}/v1/webhooks/analyze",
     )
     gpu_job_id = await gpu_client.analyze_video(request)
@@ -60,9 +65,8 @@ async def analyze_node(state: PipelineState) -> PipelineState:
         status = await gpu_client.get_job_status("video/analyze", gpu_job_id)
 
         if status.status == "completed":
-            analysis_result = await gpu_client.get_analysis_result(
-                status.result_url or f"{settings.gpu_api_url}/outputs/{gpu_job_id}.json"
-            )
+            result_url = status.result_url or f"/outputs/{gpu_job_id}.json"
+            analysis_result = await gpu_client.get_analysis_result(result_url)
             break
         elif status.status == "failed":
             raise RuntimeError(f"Analysis failed: {status.error}")
@@ -82,11 +86,15 @@ async def analyze_node(state: PipelineState) -> PipelineState:
         job.status = JobStatus.completed
         job.completed_at = datetime.now(timezone.utc)
 
+    # Count recurring identities (>=3 detections = likely a real person, not background)
+    recurring_ids = [i for i in analysis_result.identities if i.detections >= 3]
+
     logger.info(
         "analyze_complete",
         source_video_id=source_video_id,
-        scenes=len(analysis_result.scenes),
-        faces=len(analysis_result.faces),
+        scenes=analysis_result.scenes_count,
+        identities=analysis_result.identities_count,
+        recurring_faces=len(recurring_ids),
     )
 
     return {

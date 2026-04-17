@@ -3,10 +3,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from opus_clone.db import get_db
-from opus_clone.models.db import SourceVideo
-from opus_clone.models.domain import SourceVideoResponse
+from opus_clone.logging import get_logger
+from opus_clone.models.db import SourceVideo, VideoStatus
+from opus_clone.models.domain import ProcessVideosRequest, ProcessVideosResponse, SourceVideoResponse
 
 router = APIRouter(prefix="/api/videos", tags=["videos"])
+logger = get_logger("videos")
 
 
 @router.get("", response_model=list[SourceVideoResponse])
@@ -28,6 +30,67 @@ async def list_videos(
     result = await db.execute(stmt)
     videos = result.scalars().all()
     return [SourceVideoResponse.model_validate(v) for v in videos]
+
+
+@router.post("/process", response_model=ProcessVideosResponse)
+async def process_videos(body: ProcessVideosRequest, db: AsyncSession = Depends(get_db)):
+    """Manually trigger processing for selected videos.
+
+    Only videos with status=discovered will be queued for ingestion.
+    Videos already processing or completed are skipped.
+    """
+    from opus_clone.workers.ingest import ingest_video
+
+    queued: list[str] = []
+    skipped: list[str] = []
+
+    for vid_id in body.video_ids:
+        result = await db.execute(
+            select(SourceVideo).where(SourceVideo.id == vid_id)
+        )
+        video = result.scalar_one_or_none()
+        if not video:
+            skipped.append(vid_id)
+            continue
+
+        if video.status != VideoStatus.discovered.value:
+            skipped.append(vid_id)
+            continue
+
+        try:
+            ingest_video.send(str(video.id))
+            queued.append(vid_id)
+            logger.info("video_queued_for_processing", video_id=vid_id)
+        except Exception as e:
+            logger.warning("enqueue_failed", video_id=vid_id, error=str(e))
+            skipped.append(vid_id)
+
+    return ProcessVideosResponse(queued=queued, skipped=skipped)
+
+
+@router.delete("/batch", status_code=200)
+async def delete_videos(body: ProcessVideosRequest, db: AsyncSession = Depends(get_db)):
+    """Delete multiple videos by ID."""
+    deleted: list[str] = []
+    not_found: list[str] = []
+
+    for vid_id in body.video_ids:
+        result = await db.execute(
+            select(SourceVideo).where(SourceVideo.id == vid_id)
+        )
+        video = result.scalar_one_or_none()
+        if not video:
+            not_found.append(vid_id)
+            continue
+
+        await db.delete(video)
+        deleted.append(vid_id)
+
+    if deleted:
+        await db.flush()
+        logger.info("videos_deleted", count=len(deleted))
+
+    return {"deleted": deleted, "not_found": not_found}
 
 
 @router.get("/{video_id}", response_model=SourceVideoResponse)

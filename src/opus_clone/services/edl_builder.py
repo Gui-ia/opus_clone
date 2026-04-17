@@ -24,7 +24,7 @@ def build_edl(
     start_ms = int(start_s * 1000)
     end_ms = int(end_s * 1000)
 
-    # Build reframe tracks from active speaker timeline
+    # Build reframe tracks from face detections (dominant identity in clip range)
     reframe_tracks = _build_reframe_tracks(analysis, start_ms, end_ms)
 
     # Build caption words from transcript
@@ -46,38 +46,84 @@ def build_edl(
 
 
 def _build_reframe_tracks(analysis: dict, start_ms: int, end_ms: int) -> list[ReframeTrack]:
-    """Build reframe tracks from active speaker timeline."""
-    timeline = analysis.get("active_speaker_timeline", [])
+    """Build reframe tracks from face detections within the clip range.
+
+    Strategy: find the dominant identity (most detections) in the clip's time range,
+    then use their face bounding boxes to build reframe keyframes.
+    Falls back to center frame if no face data.
+    """
+    start_s = start_ms / 1000.0
+    end_s = end_ms / 1000.0
+
+    # First try active_speaker if available
+    active_speaker = analysis.get("active_speaker", [])
+    if active_speaker:
+        tracks = []
+        for entry in active_speaker:
+            entry_time = entry.get("time_s", 0)
+            if entry_time < start_s or entry_time > end_s:
+                continue
+            bbox = entry.get("bbox", [0, 0, 0, 0])
+            source_w = analysis.get("width", 1920)
+            source_h = analysis.get("height", 1080)
+            cx = ((bbox[0] + bbox[2]) / 2) / source_w if source_w else 0.5
+            cy = ((bbox[1] + bbox[3]) / 2) / source_h if source_h else 0.4
+            tracks.append(ReframeTrack(
+                start_ms=int(entry_time * 1000),
+                end_ms=int(entry_time * 1000) + 1000,
+                cx_ratio=max(0.1, min(0.9, cx)),
+                cy_ratio=max(0.1, min(0.9, cy)),
+                scale=1.0,
+            ))
+        if tracks:
+            return tracks
+
+    # Fallback: use face detections to find dominant identity in clip range
+    faces_in_range = [
+        f for f in analysis.get("faces", [])
+        if start_s <= f.get("time_s", 0) <= end_s
+    ]
+
+    if not faces_in_range:
+        # No face data — center frame
+        return [ReframeTrack(
+            start_ms=start_ms, end_ms=end_ms,
+            cx_ratio=0.5, cy_ratio=0.4, scale=1.0,
+        )]
+
+    # Find the most frequent identity in this clip range
+    identity_counts: dict[int, int] = {}
+    for f in faces_in_range:
+        iid = f.get("identity_id", -1)
+        identity_counts[iid] = identity_counts.get(iid, 0) + 1
+
+    dominant_id = max(identity_counts, key=identity_counts.get)
+
+    # Build reframe tracks from dominant identity's face positions
+    source_w = analysis.get("width", 1920)
+    source_h = analysis.get("height", 1080)
     tracks = []
 
-    for entry in timeline:
-        entry_start = entry.get("start_ms", 0)
-        entry_end = entry.get("end_ms", 0)
-
-        # Only include entries that overlap with our clip
-        if entry_end <= start_ms or entry_start >= end_ms:
-            continue
-
-        bbox = entry.get("bbox_normalized", [0.5, 0.3, 0.2, 0.4])
-        cx = bbox[0] + bbox[2] / 2 if len(bbox) >= 4 else 0.5
-        cy = bbox[1] + bbox[3] / 2 if len(bbox) >= 4 else 0.4
+    dominant_faces = [f for f in faces_in_range if f.get("identity_id") == dominant_id]
+    for f in dominant_faces:
+        bbox = f.get("bbox", [0, 0, 0, 0])
+        time_s = f.get("time_s", 0)
+        # bbox is [x1, y1, x2, y2] in pixel coords
+        cx = ((bbox[0] + bbox[2]) / 2) / source_w if source_w else 0.5
+        cy = ((bbox[1] + bbox[3]) / 2) / source_h if source_h else 0.4
 
         tracks.append(ReframeTrack(
-            start_ms=max(entry_start, start_ms),
-            end_ms=min(entry_end, end_ms),
-            cx_ratio=cx,
-            cy_ratio=cy,
+            start_ms=int(time_s * 1000),
+            end_ms=int(time_s * 1000) + 2000,  # Hold for 2s per keyframe
+            cx_ratio=max(0.1, min(0.9, cx)),
+            cy_ratio=max(0.1, min(0.9, cy)),
             scale=1.0,
         ))
 
-    # Fallback: center frame if no speaker data
     if not tracks:
         tracks.append(ReframeTrack(
-            start_ms=start_ms,
-            end_ms=end_ms,
-            cx_ratio=0.5,
-            cy_ratio=0.4,
-            scale=1.0,
+            start_ms=start_ms, end_ms=end_ms,
+            cx_ratio=0.5, cy_ratio=0.4, scale=1.0,
         ))
 
     return tracks
@@ -88,8 +134,13 @@ def _build_caption_words(transcript: dict, start_ms: int, end_ms: int) -> list[C
     words = []
     for segment in transcript.get("segments", []):
         for word_data in segment.get("words", []):
-            word_start_ms = int(word_data.get("start", 0) * 1000)
-            word_end_ms = int(word_data.get("end", 0) * 1000)
+            w_start = word_data.get("start")
+            w_end = word_data.get("end")
+            if w_start is None or w_end is None:
+                continue
+
+            word_start_ms = int(w_start * 1000)
+            word_end_ms = int(w_end * 1000)
 
             if word_end_ms <= start_ms or word_start_ms >= end_ms:
                 continue
