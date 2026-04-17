@@ -16,14 +16,38 @@ logger = get_logger("node.render")
 
 
 def _edl_to_render_api(edl: dict, gpu_file_id: str) -> dict:
-    """Convert internal EDL format to the render API's expected EDL format.
+    """Convert internal EDL format to the GPU render API format.
 
-    Internal EDL has: clip_start_ms, clip_end_ms, output_spec, captions (word-level), reframe, zooms
-    Render API expects: clips (file_id + in_point/out_point), output, captions (timed text), loudnorm
+    GPU API contract (updated):
+    - clips[]: file_id, in_point, out_point, volume, label?, reframe?
+    - captions: styled object {style, font, font_size, stroke_color, stroke_width, position, segments}
+    - overlays[]: B-roll {file_id, start, end, mode, audio_duck_db}
+    - loudnorm: EBU R128 normalization
     """
     start_ms = edl.get("clip_start_ms", 0)
     end_ms = edl.get("clip_end_ms", 0)
     output_spec = edl.get("output_spec", {})
+    reframe = edl.get("reframe", {})
+
+    # Build reframe keyframes (per-clip in the API)
+    reframe_tracks = reframe.get("tracks", [])
+    clip_reframe = None
+    if reframe_tracks:
+        source_dims = reframe.get("source_dimensions", {"width": 1920, "height": 1080})
+        clip_reframe = {
+            "source_width": source_dims.get("width", 1920),
+            "source_height": source_dims.get("height", 1080),
+            "keyframes": [
+                {
+                    "start": t.get("start_ms", 0) / 1000.0,
+                    "end": t.get("end_ms", 0) / 1000.0,
+                    "cx": t.get("cx_ratio", 0.5),
+                    "cy": t.get("cy_ratio", 0.4),
+                    "scale": t.get("scale", 1.0),
+                }
+                for t in reframe_tracks
+            ],
+        }
 
     # Build clips array — teaser (optional) + main clip
     clips = []
@@ -36,14 +60,18 @@ def _edl_to_render_api(edl: dict, gpu_file_id: str) -> dict:
             "volume": 1.0,
             "label": "teaser",
         })
-    clips.append({
+
+    main_clip = {
         "file_id": gpu_file_id,
         "in_point": start_ms / 1000.0,
         "out_point": end_ms / 1000.0,
         "volume": 1.0,
-    })
+    }
+    if clip_reframe:
+        main_clip["reframe"] = clip_reframe
+    clips.append(main_clip)
 
-    # Build output spec
+    # Output spec
     output = {
         "width": output_spec.get("width", 1080),
         "height": output_spec.get("height", 1920),
@@ -51,19 +79,13 @@ def _edl_to_render_api(edl: dict, gpu_file_id: str) -> dict:
         "video_codec": output_spec.get("codec", "h264_nvenc"),
     }
 
-    # Convert word-level captions to timed text segments with color rotation
+    # Captions — styled object with color-rotated segments
     captions_config = edl.get("captions", {})
     caption_words = captions_config.get("words", [])
     color_palette = captions_config.get("color_palette", [
         "#FFFFFF", "#FFD700", "#FF6B00", "#00FF88", "#00BFFF",
     ])
-    captions = _words_to_caption_segments(caption_words, start_ms, color_palette)
-
-    # Reframe config (if tracks exist, pass as-is for the render worker)
-    reframe = edl.get("reframe", {})
-
-    # Zooms
-    zooms = edl.get("zooms", [])
+    caption_segments = _words_to_caption_segments(caption_words, start_ms, color_palette)
 
     # Loudnorm
     loudnorm_spec = output_spec.get("loudnorm", {})
@@ -80,7 +102,8 @@ def _edl_to_render_api(edl: dict, gpu_file_id: str) -> dict:
         "loudnorm": loudnorm,
     }
 
-    if captions:
+    # Captions as styled object
+    if caption_segments:
         render_edl["captions"] = {
             "style": captions_config.get("style", "viral_karaoke"),
             "font": captions_config.get("font", "Montserrat Black"),
@@ -88,45 +111,10 @@ def _edl_to_render_api(edl: dict, gpu_file_id: str) -> dict:
             "stroke_color": captions_config.get("stroke_color", "#000000"),
             "stroke_width": captions_config.get("stroke_width", 4),
             "position": captions_config.get("position", {"v_anchor": "middle", "v_offset": 120}),
-            "segments": captions,
+            "segments": caption_segments,
         }
 
-    # Pass reframe config with source dimensions for proper crop (not stretch)
-    reframe_tracks = reframe.get("tracks", [])
-    if reframe_tracks:
-        source_dims = reframe.get("source_dimensions", {"width": 1920, "height": 1080})
-        render_edl["reframe"] = {
-            "source_width": source_dims.get("width", 1920),
-            "source_height": source_dims.get("height", 1080),
-            "mode": reframe.get("mode", "active_speaker"),
-            "smoothing": reframe.get("smoothing", {"type": "ema", "alpha": 0.15}),
-            "min_hold_ms": reframe.get("min_hold_ms", 800),
-            "tracks": [
-                {
-                    "start": t.get("start_ms", 0) / 1000.0,
-                    "end": t.get("end_ms", 0) / 1000.0,
-                    "cx": t.get("cx_ratio", 0.5),
-                    "cy": t.get("cy_ratio", 0.4),
-                    "scale": t.get("scale", 1.0),
-                }
-                for t in reframe_tracks
-            ],
-        }
-
-    # Pass zooms to GPU API
-    zooms = edl.get("zooms", [])
-    if zooms:
-        render_edl["zooms"] = [
-            {
-                "start": z.get("start_ms", 0) / 1000.0,
-                "end": z.get("end_ms", 0) / 1000.0,
-                "scale": z.get("scale", 1.15),
-                "ease": z.get("ease", "ease_in_out"),
-            }
-            for z in zooms
-        ]
-
-    # Pass b-roll overlays to GPU API
+    # B-roll overlays
     broll = edl.get("broll_overlays", [])
     if broll:
         render_edl["overlays"] = [
