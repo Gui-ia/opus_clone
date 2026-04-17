@@ -25,13 +25,23 @@ def _edl_to_render_api(edl: dict, gpu_file_id: str) -> dict:
     end_ms = edl.get("clip_end_ms", 0)
     output_spec = edl.get("output_spec", {})
 
-    # Build clips array — single clip from the source video
-    clips = [{
+    # Build clips array — teaser (optional) + main clip
+    clips = []
+    teaser = edl.get("teaser")
+    if teaser and teaser.get("enabled"):
+        clips.append({
+            "file_id": gpu_file_id,
+            "in_point": teaser["start_ms"] / 1000.0,
+            "out_point": teaser["end_ms"] / 1000.0,
+            "volume": 1.0,
+            "label": "teaser",
+        })
+    clips.append({
         "file_id": gpu_file_id,
         "in_point": start_ms / 1000.0,
         "out_point": end_ms / 1000.0,
         "volume": 1.0,
-    }]
+    })
 
     # Build output spec
     output = {
@@ -41,10 +51,13 @@ def _edl_to_render_api(edl: dict, gpu_file_id: str) -> dict:
         "video_codec": output_spec.get("codec", "h264_nvenc"),
     }
 
-    # Convert word-level captions to timed text segments
+    # Convert word-level captions to timed text segments with color rotation
     captions_config = edl.get("captions", {})
     caption_words = captions_config.get("words", [])
-    captions = _words_to_caption_segments(caption_words, start_ms)
+    color_palette = captions_config.get("color_palette", [
+        "#FFFFFF", "#FFD700", "#FF6B00", "#00FF88", "#00BFFF",
+    ])
+    captions = _words_to_caption_segments(caption_words, start_ms, color_palette)
 
     # Reframe config (if tracks exist, pass as-is for the render worker)
     reframe = edl.get("reframe", {})
@@ -68,34 +81,85 @@ def _edl_to_render_api(edl: dict, gpu_file_id: str) -> dict:
     }
 
     if captions:
-        render_edl["captions"] = captions
+        render_edl["captions"] = {
+            "style": captions_config.get("style", "viral_karaoke"),
+            "font": captions_config.get("font", "Montserrat Black"),
+            "font_size": captions_config.get("font_size", 120),
+            "stroke_color": captions_config.get("stroke_color", "#000000"),
+            "stroke_width": captions_config.get("stroke_width", 4),
+            "position": captions_config.get("position", {"v_anchor": "middle", "v_offset": 120}),
+            "segments": captions,
+        }
 
-    # Pass only reframe tracks (keyframes), not the full config
+    # Pass reframe config with source dimensions for proper crop (not stretch)
     reframe_tracks = reframe.get("tracks", [])
     if reframe_tracks:
-        render_edl["reframe"] = [
+        source_dims = reframe.get("source_dimensions", {"width": 1920, "height": 1080})
+        render_edl["reframe"] = {
+            "source_width": source_dims.get("width", 1920),
+            "source_height": source_dims.get("height", 1080),
+            "mode": reframe.get("mode", "active_speaker"),
+            "smoothing": reframe.get("smoothing", {"type": "ema", "alpha": 0.15}),
+            "min_hold_ms": reframe.get("min_hold_ms", 800),
+            "tracks": [
+                {
+                    "start": t.get("start_ms", 0) / 1000.0,
+                    "end": t.get("end_ms", 0) / 1000.0,
+                    "cx": t.get("cx_ratio", 0.5),
+                    "cy": t.get("cy_ratio", 0.4),
+                    "scale": t.get("scale", 1.0),
+                }
+                for t in reframe_tracks
+            ],
+        }
+
+    # Pass zooms to GPU API
+    zooms = edl.get("zooms", [])
+    if zooms:
+        render_edl["zooms"] = [
             {
-                "start": t.get("start_ms", 0) / 1000.0,
-                "end": t.get("end_ms", 0) / 1000.0,
-                "cx": t.get("cx_ratio", 0.5),
-                "cy": t.get("cy_ratio", 0.4),
-                "scale": t.get("scale", 1.0),
+                "start": z.get("start_ms", 0) / 1000.0,
+                "end": z.get("end_ms", 0) / 1000.0,
+                "scale": z.get("scale", 1.15),
+                "ease": z.get("ease", "ease_in_out"),
             }
-            for t in reframe_tracks
+            for z in zooms
+        ]
+
+    # Pass b-roll overlays to GPU API
+    broll = edl.get("broll_overlays", [])
+    if broll:
+        render_edl["overlays"] = [
+            {
+                "file_id": b.get("source_file_id"),
+                "start": b.get("start_ms", 0) / 1000.0,
+                "end": b.get("end_ms", 0) / 1000.0,
+                "mode": b.get("mode", "fullscreen"),
+                "audio_duck_db": b.get("audio_duck_db", -6),
+            }
+            for b in broll
         ]
 
     return render_edl
 
 
-def _words_to_caption_segments(words: list[dict], clip_start_ms: int) -> list[dict]:
+def _words_to_caption_segments(
+    words: list[dict],
+    clip_start_ms: int,
+    color_palette: list[str] | None = None,
+) -> list[dict]:
     """Group word-level captions into timed text segments (max 3 words per line)."""
     if not words:
         return []
+
+    if color_palette is None:
+        color_palette = ["#FFFFFF", "#FFD700", "#FF6B00", "#00FF88", "#00BFFF"]
 
     max_words = 3
     segments = []
     current_words = []
     current_start = None
+    segment_index = 0
 
     for w in words:
         word_text = w.get("word", "").strip()
@@ -117,9 +181,11 @@ def _words_to_caption_segments(words: list[dict], clip_start_ms: int) -> list[di
                 "start": seg_start,
                 "end": seg_end,
                 "text": " ".join(current_words),
+                "color": color_palette[segment_index % len(color_palette)],
             })
             current_words = []
             current_start = None
+            segment_index += 1
 
     # Flush remaining words
     if current_words:
@@ -130,6 +196,7 @@ def _words_to_caption_segments(words: list[dict], clip_start_ms: int) -> list[di
             "start": seg_start,
             "end": seg_end,
             "text": " ".join(current_words),
+            "color": color_palette[segment_index % len(color_palette)],
         })
 
     return segments

@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from opus_clone.agent.state import PipelineState
 from opus_clone.clients.gpu_api import GpuApiClient
+from opus_clone.clients.image_search import search_image
 from opus_clone.db import get_db_session
 from opus_clone.logging import get_logger
 from opus_clone.models.db import Clip, ClipStatus, SourceVideo, VideoStatus
@@ -38,6 +39,26 @@ async def build_edl_node(state: PipelineState) -> PipelineState:
         # Build EDL from candidate
         edl = build_edl(candidate, transcript, analysis)
         edl_dict = edl.model_dump()
+
+        # Process B-roll mentions: search images and upload to GPU API
+        for mention in candidate.get("broll_mentions", []):
+            query = mention.get("query", "")
+            if not query:
+                continue
+            try:
+                image_bytes = await search_image(query)
+                if image_bytes:
+                    upload_resp = await gpu_client.upload_file(image_bytes, f"broll_{query[:30]}.jpg")
+                    edl_dict["broll_overlays"].append({
+                        "start_ms": int(mention.get("time_s", 0) * 1000),
+                        "end_ms": int((mention.get("time_s", 0) + mention.get("duration_s", 3)) * 1000),
+                        "source_file_id": upload_resp.file_id,
+                        "mode": "fullscreen",
+                        "audio_duck_db": -6,
+                    })
+                    logger.info("broll_added", query=query, file_id=upload_resp.file_id)
+            except Exception as e:
+                logger.warning("broll_search_failed", query=query, error=str(e))
 
         # Generate title and hashtags via LLM
         title, hashtags = await _generate_metadata(gpu_client, candidate, transcript)

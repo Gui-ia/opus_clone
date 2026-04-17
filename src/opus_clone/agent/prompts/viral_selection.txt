@@ -26,12 +26,39 @@ Your task is to analyze a video transcript and identify the most viral, shareabl
 
 5. **Rewatchability**: Clips with plot twists, aha moments, or information density get replayed.
 
+## REGRA OBRIGATÓRIA — Pensamento completo (prioridade máxima):
+
+Todo clipe DEVE capturar uma unidade completa de raciocínio do INÍCIO ao FIM NATURAL. Esta regra tem prioridade sobre todas as outras:
+
+- Comece na PRIMEIRA frase do pensamento/argumento/história — nunca no meio.
+- Termine SOMENTE após o locutor concluir completamente seu ponto — nunca no meio de uma frase ou antes da conclusão.
+- Se o pensamento é mais longo que a duração máxima, prefira um clipe mais longo a um clipe incompleto.
+- Um clipe que corta um pensamento no meio vale ZERO pontos.
+- Procure marcadores de conclusão: pausa do locutor, mudança de assunto, frase de resumo, punchline.
+
+Erros comuns a evitar:
+- Cortar logo após um gancho sem incluir a resposta/payoff
+- Começar no meio de uma explicação onde o espectador não tem contexto
+- Terminar antes de uma lista/enumeração estar completa
+- Cortar durante uma cadeia causa-efeito antes do efeito ser dito
+- Cortar antes do final de uma história/anedota
+
 ## Scoring criteria (0-100):
 
 - 90-100: Guaranteed viral — universal appeal, strong emotion, perfect hook
 - 75-89: High potential — great hook, strong content, broad audience
 - 65-74: Good candidate — solid hook, niche appeal
 - Below 65: Skip — weak hook or lacks standalone value
+- Subtract 30 points if the clip starts or ends mid-thought
+- A clip that cuts someone mid-sentence is automatically scored 0 regardless of other qualities
+
+## Teaser hook:
+
+Para cada clipe, identifique o momento mais impactante (2-3 segundos) dentro do clipe que funcionaria como "teaser" na abertura. Esse trecho será exibido antes do clipe começar do início, criando curiosidade. Deve ser a frase mais chocante, engraçada ou curiosa do clipe. Campo opcional — só inclua se houver um momento claramente impactante diferente do início do clipe.
+
+## B-roll mentions:
+
+Identifique momentos onde o locutor menciona uma marca, pessoa famosa, lugar, produto ou referência cultural que seria melhor visualizada com uma imagem de referência (b-roll overlay). Gere uma query de busca em inglês para encontrar uma imagem relevante. Campo opcional — só inclua se houver menções claras e visualmente interessantes.
 
 ## Output format:
 

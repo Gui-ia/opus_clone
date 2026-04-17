@@ -47,7 +47,7 @@ async def analyze_node(state: PipelineState) -> PipelineState:
         file_id=gpu_file_id,
         detect_scenes=True,
         detect_faces=True,
-        detect_active_speaker=False,
+        detect_active_speaker=True,
         frames_per_scene=5,
         webhook_url=f"{settings.app_base_url}/v1/webhooks/analyze",
     )

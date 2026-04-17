@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     scraper_agent_timeout_s: int = 300
     scraper_agent_mock: bool = False
 
+    # Google Custom Search (for B-roll image search)
+    google_cse_api_key: str = ""
+    google_cse_id: str = ""
+
     # YouTube
     youtube_api_key: str = ""
     youtube_pubsub_callback_url: str = ""

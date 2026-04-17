@@ -87,8 +87,12 @@ Return a JSON array of clip candidates. Each candidate:
   "confidence": <float 0-1>,
   "hook_type": "<curiosity|shock|contrarian|story|educational>",
   "category": "<string>",
-  "rationale": "<why this moment is viral>"
+  "rationale": "<why this moment is viral>",
+  "teaser": {{"start_s": <float>, "end_s": <float>, "text": "<most impactful phrase>"}} or null,
+  "broll_mentions": [{{"time_s": <float>, "duration_s": <float>, "query": "<english search query>", "type": "image"}}] or []
 }}
+
+REGRA CRÍTICA: Cada clipe DEVE começar no início de um pensamento completo e terminar SOMENTE após sua conclusão natural. É melhor um clipe mais longo do que cortar alguém no meio do raciocínio. Clipe que corta pensamento no meio = score 0.
 
 Return ONLY the JSON array, no other text."""
 

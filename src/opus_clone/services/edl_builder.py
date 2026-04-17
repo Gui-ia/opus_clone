@@ -6,6 +6,8 @@ from opus_clone.models.edl import (
     OutputSpec,
     ReframeConfig,
     ReframeTrack,
+    SourceDimensions,
+    TeaserConfig,
     ZoomConfig,
 )
 
@@ -33,13 +35,23 @@ def build_edl(
     # Detect zoom points at emotional peaks
     zooms = _detect_zoom_points(candidate, start_ms, end_ms)
 
+    # Build teaser config from LLM-identified impactful moment
+    teaser = _build_teaser(candidate, start_ms, end_ms)
+
+    source_w = analysis.get("width", 1920)
+    source_h = analysis.get("height", 1080)
+
     edl = EDL(
         clip_start_ms=start_ms,
         clip_end_ms=end_ms,
         output_spec=OutputSpec(),
-        reframe=ReframeConfig(tracks=reframe_tracks),
+        reframe=ReframeConfig(
+            tracks=reframe_tracks,
+            source_dimensions=SourceDimensions(width=source_w, height=source_h),
+        ),
         captions=CaptionConfig(words=caption_words),
         zooms=zooms,
+        teaser=teaser,
     )
 
     return edl
@@ -157,7 +169,7 @@ def _build_caption_words(transcript: dict, start_ms: int, end_ms: int) -> list[C
                 start_ms=word_start_ms,
                 end_ms=word_end_ms,
                 emphasis=emphasis,
-                color="#FFD700" if emphasis else None,
+                color="#FFD700" if emphasis else "#FFFFFF",
             ))
 
     return words
@@ -186,6 +198,38 @@ def _detect_zoom_points(candidate: dict, start_ms: int, end_ms: int) -> list[Zoo
     ))
 
     return zooms
+
+
+def _build_teaser(candidate: dict, start_ms: int, end_ms: int) -> TeaserConfig | None:
+    """Build teaser config from LLM-identified impactful moment."""
+    teaser_data = candidate.get("teaser")
+    if not teaser_data or not isinstance(teaser_data, dict):
+        return None
+
+    teaser_start_s = teaser_data.get("start_s")
+    teaser_end_s = teaser_data.get("end_s")
+    if teaser_start_s is None or teaser_end_s is None:
+        return None
+
+    teaser_start_ms = int(teaser_start_s * 1000)
+    teaser_end_ms = int(teaser_end_s * 1000)
+
+    # Validate: teaser must be within the clip range and not at the very start
+    if teaser_start_ms < start_ms or teaser_end_ms > end_ms:
+        return None
+    if teaser_start_ms <= start_ms + 1000:
+        # Teaser is already at the start — no point in repeating it
+        return None
+    if teaser_end_ms - teaser_start_ms > 5000:
+        # Teaser too long (max 5s)
+        teaser_end_ms = teaser_start_ms + 5000
+
+    return TeaserConfig(
+        enabled=True,
+        start_ms=teaser_start_ms,
+        end_ms=teaser_end_ms,
+        text=teaser_data.get("text", ""),
+    )
 
 
 _EMPHASIS_WORDS = {

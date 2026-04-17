@@ -67,14 +67,23 @@ class CaptionPosition(BaseModel):
 
 class CaptionConfig(BaseModel):
     enabled: bool = True
-    style: str = "viral_yellow_karaoke"
+    style: str = "viral_karaoke"
     font: str = "Montserrat Black"
-    font_size: int = 110
+    font_size: int = 120
+    color_palette: list[str] = [
+        "#FFFFFF",
+        "#FFD700",
+        "#FF6B00",
+        "#00FF88",
+        "#00BFFF",
+    ]
+    stroke_color: str = "#000000"
+    stroke_width: int = 4
     words: list[CaptionWord] = []
     emojis: list[CaptionEmoji] = []
     max_words_per_page: int = 3
     max_gap_s: float = 0.35
-    position: CaptionPosition = CaptionPosition()
+    position: CaptionPosition = CaptionPosition(v_anchor="middle", v_offset=120)
 
 
 class ZoomConfig(BaseModel):
@@ -114,6 +123,13 @@ class WatermarkConfig(BaseModel):
     opacity: float = 0.85
 
 
+class TeaserConfig(BaseModel):
+    enabled: bool = False
+    start_ms: int = 0
+    end_ms: int = 0
+    text: str = ""
+
+
 class EDL(BaseModel):
     clip_start_ms: int
     clip_end_ms: int
@@ -125,3 +141,4 @@ class EDL(BaseModel):
     sfx: list[SFX] = []
     background_music: BackgroundMusic | None = None
     watermark: WatermarkConfig | None = None
+    teaser: TeaserConfig | None = None
